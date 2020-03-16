@@ -6,8 +6,9 @@
 
 using namespace std;
 
-#define LATM_channel(header) ((header[6] & 0x78) >> 3)
-#define LATM_length(header) ((((header[1] & 0x1F) << 8) | header[2]) + 3)
+#define LATM_invalid(header) ((header)[0] != 0x56 || ((header)[1] & 0xE0) != 0xE0)
+#define LATM_channel(header) (((header)[6] & 0x78) >> 3)
+#define LATM_length(header) (((((header)[1] & 0x1F) << 8) | (header)[2]) + 3)
 #define BUFFER_LEN (2<<23)
 
 char* name_prefix;
@@ -25,11 +26,11 @@ void sync_signal(ifstream& input) {
     input.read((char*) buffer, sizeof(buffer));
     for(header = buffer; header < buffer + sizeof(buffer)-(1<<14); header++) {
         // Check current syncword
-        if(header[0] != 0x56 || (header[1] & 0xE0) != 0xE0)
+        if(LATM_invalid(header))
             continue;
         int length = LATM_length(header);
         // Check next syncword by length
-        if(header[length] != 0x56 || (header[length+1] & 0xE0) != 0xE0)
+        if(LATM_invalid(header + length))
             continue;
         if(header > buffer)
             printf("Syncing to %d bytes\n", header - buffer);
@@ -57,6 +58,7 @@ void split_latm(const char * latm_filename) {
     int pending_check_begin;
     size_t stream_pos;
     int i = 0;
+    int force_cut = 0;
     // Get total
     auto beginning = input.tellg();
     input.seekg(0, ios::end);
@@ -83,13 +85,30 @@ void split_latm(const char * latm_filename) {
             if(pending_check_begin + latm_len > buffer_valid_length)
                 break;
 
-            if(header[0] != 0x56 || (header[1] & 0xE0) != 0xE0) {
+            if(LATM_invalid(header)) {
                 printf("Data is corrupted at %ld+%d\n", stream_pos, pending_check_begin);
                 printf("Sync word is %X%X, unable to sync.\n", header[0], header[1]);
                 return;
             }
 
-            if(LATM_channel(header) != last_channel) {
+            int force_cut_here = force_cut;
+
+            if(LATM_invalid(header + latm_len)) {
+                printf("Data is corrupted at %ld+%d\n", stream_pos, pending_check_begin + latm_len);
+                printf("Sync word is %X%X, re-syncing.\n", header[latm_len], header[latm_len+1]);
+                unsigned char* next_header = header + 2;
+                while(++next_header < (unsigned char*)buffer + buffer_valid_length - 2) {
+                    if(!LATM_invalid(next_header)) {
+                        latm_len = next_header - header;
+                        force_cut = 1;
+                        printf("Re-syncing at %ld+%d\n", stream_pos, pending_check_begin + latm_len);
+                        break;
+                    }
+                }
+            }
+
+            if(LATM_channel(header) != last_channel || force_cut_here) {
+                force_cut = 0;
                 // Channel configuration has changed, writing to new destination
                 input.seekg(pending_check_begin - buffer_valid_length, ios_base::cur);
 
