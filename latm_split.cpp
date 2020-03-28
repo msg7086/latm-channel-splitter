@@ -9,7 +9,7 @@ using namespace std;
 #define LATM_invalid(header) ((header)[0] != 0x56 || ((header)[1] & 0xE0) != 0xE0)
 #define LATM_channel(header) (((header)[6] & 0x78) >> 3)
 #define LATM_length(header) (((((header)[1] & 0x1F) << 8) | (header)[2]) + 3)
-#define BUFFER_LEN (2<<23)
+#define BUFFER_LEN (1<<24)
 
 char* name_prefix;
 char out_filename[10240] = {0};
@@ -82,7 +82,17 @@ void split_latm(const char * latm_filename) {
             if(pending_check_begin + 7 > buffer_valid_length)
                 break;
             int latm_len = LATM_length(header);
-            if(pending_check_begin + latm_len > buffer_valid_length)
+
+            // Last full block?
+            bool fullblock = pending_check_begin + latm_len == buffer_valid_length && input.eof();
+            bool lastblock = pending_check_begin + latm_len + 4 > buffer_valid_length && input.eof();
+
+            if (lastblock && !force_cut) {
+                pending_check_begin = buffer_valid_length;
+                break;
+            }
+
+            if(!fullblock && (pending_check_begin + latm_len + 4 > buffer_valid_length))
                 break;
 
             if(LATM_invalid(header)) {
@@ -93,7 +103,7 @@ void split_latm(const char * latm_filename) {
 
             int force_cut_here = force_cut;
 
-            if(LATM_invalid(header + latm_len)) {
+            if(!lastblock && LATM_invalid(header + latm_len)) {
                 printf("Data is corrupted at %ld+%d\n", stream_pos, pending_check_begin + latm_len);
                 printf("Sync word is %X%X, re-syncing.\n", header[latm_len], header[latm_len+1]);
                 unsigned char* next_header = header + 2;
